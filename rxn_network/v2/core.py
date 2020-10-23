@@ -33,6 +33,7 @@ class InterfaceReactionNetwork:
 
         self.original_entries = EntrySet(entries)
         self.include_metastable = include_metastable
+        self.g = None
 
         if temps is None:
             temps = DEFAULT_TEMPS
@@ -54,42 +55,44 @@ class InterfaceReactionNetwork:
                 filtered_entries, temp)
             entry_dict[temp] = EntrySet(gibbs_entries)
 
+        self.entry_dict = entry_dict
 
-    def generate_rxn_network(
-            self,
-            precursors=None,
-            cost_function="softplus",
-    ):
+        filtered_entries_str = ", ".join(
+            [entry.composition.reduced_formula for entry in filtered_entries]
+        )
+        self.logger.info(
+            f"Initializing network with {len(filtered_entries)} "
+            f"entries: \n{filtered_entries_str}"
+        )
 
-        precursors_entries = Phases(precursors, "s")
-
+    def generate_rxn_network(self, precursors=None):
         g = gt.Graph()
 
-        g.vp["entries"] = g.new_vertex_property("object")
-        g.vp["type"] = g.new_vertex_property(
-            "int"
-        )  # 0: precursors, 1: reactants, 2: products, 3: target
-        g.vp["bool"] = g.new_vertex_property("bool")
-        g.vp["path"] = g.new_vertex_property("bool")
+        g.vp["phases"] = g.new_vertex_property("object")
         g.vp["chemsys"] = g.new_vertex_property("string")
+        g.vp["type"] = g.new_vertex_property("int")
 
         g.ep["weight"] = g.new_edge_property("double")
         g.ep["rxn"] = g.new_edge_property("object")
         g.ep["bool"] = g.new_edge_property("bool")
         g.ep["path"] = g.new_edge_property("bool")
 
+        precursors = Phases(precursors)
         precursors_v = g.add_vertex()
         self._update_vertex_properties(
             g,
             precursors_v,
             {
-                "entries": precursors_entries,
+                "phases": precursors,
                 "type": 0,
                 "bool": True,
                 "path": True,
-                "chemsys": precursors_entries.chemsys,
+                "chemsys": precursors.chemsys,
             },
         )
+
+
+        self.g = g
 
     @staticmethod
     def _update_vertex_properties(g, v, prop_dict):

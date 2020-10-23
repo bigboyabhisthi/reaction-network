@@ -10,6 +10,7 @@ import graph_tool.all as gt
 from pymatgen import Composition
 from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.analysis.reaction_calculator import ComputedReaction
+from pymatgen.analysis.interface_reactions import InterfacialReactivity
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 
 from typing import List
@@ -36,16 +37,17 @@ with open(os.path.join(os.path.dirname(__file__), "compounds.json")) as f:
     G_COMPOUNDS = json.load(f)
 
 
-class Phases(MSONable):
-    """
-    """
+class Node(MSONable):
     def __init__(self, entries):
         """
         Args:
             entries [ComputedEntry]: list of ComputedEntry-like objects
         """
-        self._entries = set(entries) if entries else None
-        self._chemsys = (
+        self._entries = set(entries)
+        self.formulas = [e.composition.reduced_composition.alphabetical_formula.replace(
+            " ","") for e in self._entries]
+        self.temp = getattr(list(entries)[0], "temp", 0)
+        self.chemsys = (
             "-".join(
                 sorted(
                     {
@@ -63,12 +65,8 @@ class Phases(MSONable):
     def entries(self):
         return self._entries
 
-    @property
-    def chemsys(self):
-        return self._chemsys
-
     def __repr__(self):
-        formulas = [entry.composition.reduced_formula for entry in self._entries]
+        formulas = self.formulas.copy()
         formulas.sort()
         return f"{','.join(formulas)}"
 
@@ -83,88 +81,51 @@ class Phases(MSONable):
         return hash(frozenset(self._entries))
 
 
-class Interface(MSONable):
+class Phases(Node):
     """
     """
+    def __init__(self, entries, intermediates=None):
+        self.intermediates = intermediates if intermediates else []
+        super().__init__(entries)
 
+
+class Interface(Node):
+    """
+    """
     def __init__(self, entries):
-        """
-        Args:
-            entries [ComputedEntry]: list of ComputedEntry-like objects
+        self.n = len(entries)
+        self.r1 = entries[0]
 
-        """
-        self._entries = set(entries) if entries else None
-        self._chemsys = (
-            "-".join(
-                sorted(
-                    {
-                        str(el)
-                        for entry in self._entries
-                        for el in entry.composition.elements
-                    }
-                )
-            )
-            if entries
-            else None
+        if self.n == 1:
+            self.r2 = entries[0]
+        elif self.n == 2:
+            self.r2 = entries[1]
+        else:
+            raise ValueError("Can't have an interface that is not 1 to 2 entries!")
+
+        super().__init__(entries)
+
+    def react(self, pd):
+        ir = InterfacialReactivity(self.r1, self.r2, pd, norm=False,
+                                   include_no_mixing_energy=False,
+                                   pd_non_grand=None,
+                                   use_hull_energy=False,
         )
 
-        if description in ["r", "R", "reactants", "Reactants"]:
-            self._description = "R"
-        elif description in ["p", "P", "products", "Products"]:
-            self._description = "P"
-        elif description in [
-            "s",
-            "S",
-            "precursors",
-            "Precursors",
-            "starters",
-            "Starters",
-        ]:
-            self._description = "S"
-        elif description in ["t", "T", "target", "Target"]:
-            self._description = "T"
-        elif description in ["d", "D", "dummy", "Dummy"]:
-            self._description = "D"
-        else:
-            self._description = description
+        rxns = [
+            {"fraction": round(ratio, 3),
+             "rxn": rxn,
+             "E_per_mol": round(rxn_energy, 1),
+             "E_per_atom": round(reactivity, 3),
+             } for _, ratio, reactivity, rxn, rxn_energy in ir.get_kinks()
+        ]
 
-    @property
-    def entries(self):
-        return self._entries
-
-    @property
-    def description(self):
-        return self._description
-
-    @property
-    def chemsys(self):
-        return self._chemsys
+        
 
     def __repr__(self):
-        if self._description == "D":
-            return "Dummy Node"
-
-        formulas = [entry.composition.reduced_formula for entry in self._entries]
+        formulas = self.formulas.copy()
         formulas.sort()
-        if not self._description:
-            return f"{','.join(formulas)}"
-        else:
-            return f"{self._description}: {','.join(formulas)}"
-
-    def __eq__(self, other):
-        if isinstance(other, self.__class__):
-            if self.description == other.description:
-                if self.chemsys == other.chemsys:
-                    return self.entries == other.entries
-        else:
-            return False
-
-    def __hash__(self):
-        if not self._description or self._description == "D":
-            return hash(self._description)
-        else:
-            return hash((self._description, frozenset(self._entries)))
-
+        return f"{'|'.join(formulas)}"
 
 class RxnPathway(MSONable):
     """
