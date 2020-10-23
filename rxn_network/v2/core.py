@@ -20,7 +20,7 @@ __author__ = "Matthew McDermott"
 __copyright__ = "Copyright 2020, Matthew McDermott"
 __version__ = "0.0"
 __email__ = "mcdermott@lbl.gov"
-__date__ = "October 20, 2020"
+__date__ = "October 23, 2020"
 
 
 DEFAULT_TEMPS = list(np.arange(300, 1100, 100))
@@ -91,6 +91,7 @@ class InterfaceReactionNetwork:
             },
         )
 
+        interfaces = generate_all_combos(precursors.entries)
 
         self.g = g
 

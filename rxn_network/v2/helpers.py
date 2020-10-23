@@ -1,5 +1,5 @@
 import os
-from itertools import combinations
+from itertools import combinations, chain, groupby, compress
 import queue
 import json
 
@@ -26,7 +26,7 @@ from pymatgen.entries.entry_tools import EntrySet
 
 __author__ = "Matthew McDermott"
 __email__ = "mcdermott@lbl.gov"
-__date__ = "July 4, 2020"
+__date__ = "October 23, 2020"
 
 
 with open(os.path.join(os.path.dirname(__file__), "g_els.json")) as f:
@@ -120,7 +120,6 @@ class Interface(Node):
              } for _, ratio, reactivity, rxn, rxn_energy in ir.get_kinks()
         ]
 
-        
 
     def __repr__(self):
         formulas = self.formulas.copy()
@@ -756,6 +755,7 @@ def yens_ksp(
 
     return a
 
+
 def expand_pd(entries):
     """
     Helper method for expanding a single PhaseDiagram into a set of smaller phase
@@ -847,6 +847,26 @@ def filter_entries(all_entries, e_above_hull, include_polymorphs=False):
 
     return pd_dict, EntrySet(filtered_entries)
 
+
 def get_alphabetical_reduced_formula(entry):
     return entry.composition.reduced_composition.alphabetical_formula.replace(" ", "")
 
+
+def generate_all_combos(entries, max_num_combos):
+    """
+    Helper static method for generating combination sets ranging from singular
+    length to maximum length specified by max_num_combos.
+
+    Args:
+        entries (list/set): list/set of all entry objects to combine
+        max_num_combos (int): upper limit for size of combinations of entries
+
+    Returns:
+        list: all combination sets
+    """
+    return chain.from_iterable(
+        [
+            combinations(entries, num_combos)
+            for num_combos in range(1, max_num_combos + 1)
+        ]
+    )
