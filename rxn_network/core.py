@@ -24,6 +24,8 @@ from rxn_network.analysis import *
 from rxn_network.reaction import *
 from rxn_network.entries import *
 
+from matterials.solids import ChempotMap
+
 
 __author__ = "Matthew McDermott"
 __copyright__ = "Copyright 2020, Matthew McDermott"
@@ -49,7 +51,7 @@ class ReactionNetwork:
         extend_entries=None,
         include_metastable=False,
         include_polymorphs=False,
-        include_chempot_restriction=False,
+        include_chempot_distance=False,
         filter_rxn_energies=0.5,
     ):
         """Initializes ReactionNetwork object with necessary preprocessing
@@ -97,11 +99,11 @@ class ReactionNetwork:
         self._temp = temp
         self._e_above_hull = include_metastable
         self._include_polymorphs = include_polymorphs
-        self._include_chempot_restriction = include_chempot_restriction
+        self._include_chempot_distance = include_chempot_distance
         self._elements = {
             elem for entry in self.all_entries for elem in entry.composition.elements
         }
-        self._pd_dict, self._filtered_entries = self._filter_entries(
+        self._pd_dict, self._filtered_entries = filter_entries(
             entries, include_metastable, temp, include_polymorphs
         )
         self._entry_mu_ranges = {}
@@ -112,7 +114,7 @@ class ReactionNetwork:
             len(self._elements) <= 10
         ):  # phase diagrams take considerable time to build with 10+ elems
             self._pd = PhaseDiagram(self._filtered_entries)
-        elif len(self._elements) > 10 and include_chempot_restriction:
+        elif len(self._elements) > 10 and include_chempot_distance:
             raise ValueError(
                 "Cannot include chempot restriction for networks with greater than 10 elements!"
             )
@@ -136,23 +138,9 @@ class ReactionNetwork:
 
         self.num_entries = len(self._filtered_entries)
 
-        if include_chempot_restriction:
-            for e in self._filtered_entries:
-                elems = e.composition.elements
-                chempot_ranges = {}
-                all_chempots = {e: [] for e in elems}
-                for simplex, chempots in self._pd.get_all_chempots(
-                    e.composition
-                ).items():
-                    for elem in elems:
-                        all_chempots[elem].append(chempots[elem])
-                for elem in elems:
-                    chempot_ranges[elem] = (
-                        min(all_chempots[elem]),
-                        max(all_chempots[elem]),
-                    )
-
-                self._entry_mu_ranges[e] = chempot_ranges
+        self._cmap = None
+        if include_chempot_distance:
+            self._cmap = ChempotMap(self._pd, default_limit=-20)
 
         self._all_entry_combos = [
             set(combo)
@@ -397,11 +385,15 @@ class ReactionNetwork:
 
         db = bag.from_sequence(chain.from_iterable(all_rxn_combos),
                                partition_size=100000)
+        cmap = None
+        if self._include_chempot_distance:
+            cmap = self._cmap
         reaction_edges = db.map_partitions(find_rxn_edges,
                                            cost_function=cost_function,
                                            rxn_e_filter=self._rxn_e_filter,
                                            temp=self.temp,
-                                           num_entries=self.num_entries).compute()
+                                           num_entries=self.num_entries,
+                                           cmap=cmap).compute()
 
         all_edges.extend(reaction_edges)
 
@@ -1094,48 +1086,6 @@ class ReactionNetwork:
             filtered_multiplicities[i] = all_multiplicities[idx]
 
         return filtered_comp_matrices, filtered_multiplicities
-
-    @staticmethod
-    def _filter_entries(all_entries, e_above_hull, temp, include_polymorphs=False):
-        """
-        Helper method for filtering entries by specified energy above hull
-
-        Args:
-            all_entries ([ComputedEntry]): List of ComputedEntry-like objects to be
-                filtered
-            e_above_hull (float): Thermodynamic stability threshold (energy above hull)
-                [eV/atom]
-            include_polymorphs (bool): whether to include higher energy polymorphs of
-                existing structures
-
-        Returns:
-            [ComputedEntry]: list of all entries with energies above hull equal to or
-                less than the specified e_above_hull.
-        """
-        pd_dict = expand_pd(all_entries)
-        pd_dict = {
-            chemsys: PhaseDiagram(GibbsComputedStructureEntry.from_pd(pd, temp))
-            for chemsys, pd in pd_dict.items()
-        }
-
-        filtered_entries = set()
-        all_comps = dict()
-        for chemsys, pd in pd_dict.items():
-            for entry in pd.all_entries:
-                if (
-                    entry in filtered_entries
-                    or pd.get_e_above_hull(entry) > e_above_hull
-                ):
-                    continue
-                formula = entry.composition.reduced_formula
-                if not include_polymorphs and (formula in all_comps):
-                    if all_comps[formula].energy_per_atom < entry.energy_per_atom:
-                        continue
-                    filtered_entries.remove(all_comps[formula])
-                all_comps[formula] = entry
-                filtered_entries.add(entry)
-
-        return pd_dict, list(filtered_entries)
 
     @property
     def g(self):

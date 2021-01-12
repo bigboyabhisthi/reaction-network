@@ -4,7 +4,7 @@ info in the Reaction Network core module.
 """
 
 import os
-from itertools import chain, combinations, zip_longest
+from itertools import chain, combinations, zip_longest, product
 
 import numpy as np
 from functools import cached_property
@@ -15,6 +15,8 @@ from rxn_network.reaction import Reaction, ReactionError, ComputedReaction
 from pymatgen.analysis.interface_reactions import InterfacialReactivity
 
 from monty.json import MSONable, MontyEncoder, MontyDecoder
+
+from rxn_network.entries import GibbsComputedStructureEntry
 
 
 __author__ = "Matthew McDermott"
@@ -136,13 +138,13 @@ class BalancedPathway(MSONable):
 
     @cached_property
     def total_cost(self):
-        if self.is_balanced:
+        if self.multiplicities:
             return sum([self.multiplicities[r]*self.rxn_dict[r] for r in
                         self.rxn_dict])/sum(list(self.multiplicities.values()))
 
     @cached_property
     def average_cost(self):
-        if self.is_balanced:
+        if self.multiplicities:
             return sum([self.multiplicities[r]*self.rxn_dict[r] for r in
                         self.rxn_dict])/sum(list(self.multiplicities.values())) / len(self.rxn_dict)
 
@@ -302,6 +304,48 @@ def generate_all_combos(entries, max_num_combos):
     )
 
 
+def filter_entries(all_entries, e_above_hull, temp, include_polymorphs=False):
+    """
+    Helper method for filtering entries by specified energy above hull
+
+    Args:
+        all_entries ([ComputedEntry]): List of ComputedEntry-like objects to be
+            filtered
+        e_above_hull (float): Thermodynamic stability threshold (energy above hull)
+            [eV/atom]
+        include_polymorphs (bool): whether to include higher energy polymorphs of
+            existing structures
+
+    Returns:
+        [ComputedEntry]: list of all entries with energies above hull equal to or
+            less than the specified e_above_hull.
+    """
+    pd_dict = expand_pd(all_entries)
+    pd_dict = {
+        chemsys: PhaseDiagram(GibbsComputedStructureEntry.from_pd(pd, temp))
+        for chemsys, pd in pd_dict.items()
+    }
+
+    filtered_entries = set()
+    all_comps = dict()
+    for chemsys, pd in pd_dict.items():
+        for entry in pd.all_entries:
+            if (
+                entry in filtered_entries
+                or pd.get_e_above_hull(entry) > e_above_hull
+            ):
+                continue
+            formula = entry.composition.reduced_formula
+            if not include_polymorphs and (formula in all_comps):
+                if all_comps[formula].energy_per_atom < entry.energy_per_atom:
+                    continue
+                filtered_entries.remove(all_comps[formula])
+            all_comps[formula] = entry
+            filtered_entries.add(entry)
+
+    return pd_dict, list(filtered_entries)
+
+
 def react_interface(r1, r2, pd, num_entries, grand_pd=None):
     if grand_pd:
         interface = InterfacialReactivity(
@@ -453,7 +497,7 @@ def softplus(params, weights, t=273):
 
 
 def get_rxn_cost(rxn, cost_function="softplus", temp=273, max_mu_diff=None,
-                      most_negative_rxn=None):
+                      most_negative_rxn=None, cmap=None):
     """Helper method which determines reaction cost/weight.
 
     Args:
@@ -469,6 +513,15 @@ def get_rxn_cost(rxn, cost_function="softplus", temp=273, max_mu_diff=None,
         if max_mu_diff:
             params = [energy, max_mu_diff]
             weights = [1, 0.1]
+        elif cmap:
+            if all(elem in cmap.pd.stable_entries for elem in rxn.all_entries):
+                distance = max([cmap.shortest_domain_distance(combo[0], combo[1]) for
+                                combo in product(rxn._reactant_entries, rxn._product_entries)])
+            else:
+                print(rxn)
+                distance = 1.0
+            params = [energy, distance]
+            weights = [1, 1]
         else:
             params = [energy]
             weights = [1.0]
@@ -494,7 +547,7 @@ def grouper(iterable, n, fillvalue=None):
     return zip_longest(*args, fillvalue=fillvalue)
 
 
-def find_rxn_edges(combos, cost_function, rxn_e_filter, temp, num_entries):
+def find_rxn_edges(combos, cost_function, rxn_e_filter, temp, num_entries, cmap):
     edges = []
     for combo in combos:
         if not combo:
@@ -551,7 +604,7 @@ def find_rxn_edges(combos, cost_function, rxn_e_filter, temp, num_entries):
             continue
 
         weight = get_rxn_cost(
-            rxn, cost_function=cost_function, temp=temp, max_mu_diff=None
+            rxn, cost_function=cost_function, temp=temp, max_mu_diff=None, cmap=cmap
         )
         edges.append([v, other_v, weight, rxn, True, False])
 
